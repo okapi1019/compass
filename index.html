@@ -60,6 +60,7 @@
     button:disabled { opacity: .65; cursor: not-allowed; }
 
     #status { margin-top: 10px; min-height: 1.2em; color: var(--muted); font-size: 14px; }
+    .version { margin-top: 10px; color: var(--muted); font-size: 12px; }
   </style>
 </head>
 <body>
@@ -115,6 +116,7 @@
           <circle cx="100" cy="100" r="6" fill="#111827" />
         </g>
       </svg>
+      <div id="distance" class="subtitle"></div>
       <div id="status" class="subtitle"></div>
     </div>
 
@@ -130,10 +132,17 @@
         <button id="save-home" class="secondary">自宅を保存</button>
       </div>
     </div>
+    <div id="version" class="version" aria-label="App version"></div>
   </div>
   <script>
+    // App version (Update this on every release)
+    const APP_VERSION = '0.1.0';
+
     const needle = document.getElementById('needle');
     const statusEl = document.getElementById('status');
+    const versionEl = document.getElementById('version');
+    if (versionEl) { versionEl.textContent = `v${APP_VERSION}`; }
+    const distanceEl = document.getElementById('distance');
     const homeLatInput = document.getElementById('home-lat');
     const homeLonInput = document.getElementById('home-lon');
     let home = null;
@@ -142,6 +151,27 @@
     let watchId = null;
 
     function toRad(deg) { return deg * Math.PI / 180; }
+
+    function distanceMeters(lat1, lon1, lat2, lon2) {
+      const R = 6371000; // meters
+      const φ1 = toRad(lat1);
+      const φ2 = toRad(lat2);
+      const Δφ = toRad(lat2 - lat1);
+      const Δλ = toRad(lon2 - lon1);
+      const a = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+
+    function updateDistance() {
+      if (!home || !currentPos) {
+        distanceEl.textContent = '';
+        return;
+      }
+      const m = distanceMeters(currentPos.latitude, currentPos.longitude, home.lat, home.lon);
+      const rounded = Math.round(m).toLocaleString();
+      distanceEl.textContent = `自宅まで ${rounded} m`;
+    }
 
     function bearingTo(lat1, lon1, lat2, lon2) {
       const φ1 = toRad(lat1);
@@ -161,6 +191,7 @@
         home = { lat: parseFloat(lat), lon: parseFloat(lon) };
         homeLatInput.value = lat;
         homeLonInput.value = lon;
+        updateDistance();
       }
     }
 
@@ -172,6 +203,7 @@
         localStorage.setItem('homeLon', lon);
         home = { lat, lon };
         statusEl.textContent = '自宅を保存しました。';
+        updateDistance();
         return true;
       }
       statusEl.textContent = '緯度・経度が正しくありません。';
@@ -213,7 +245,10 @@
       if (watchId != null) return;
       try {
         watchId = navigator.geolocation.watchPosition(
-          pos => { currentPos = pos.coords; },
+          pos => {
+            currentPos = pos.coords;
+            updateDistance();
+          },
           err => {
             console.warn('watchPosition error:', err);
             statusEl.textContent = '位置情報の取得に失敗しました: ' + err.message + '（Safariの場合は設定で位置情報を許可してください）';
@@ -228,7 +263,7 @@
     function requestLocationOnce() {
       return new Promise((resolve) => {
         navigator.geolocation.getCurrentPosition(
-          pos => { currentPos = pos.coords; resolve({ ok: true, pos }); },
+          pos => { currentPos = pos.coords; updateDistance(); resolve({ ok: true, pos }); },
           err => {
             statusEl.textContent = '現在地の取得に失敗しました: ' + err.message + '（Safariのサイト設定で許可してください）';
             resolve({ ok: false, err });
