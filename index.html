@@ -139,6 +139,7 @@
     let home = null;
     let currentPos = null;
     let orientationEnabled = false;
+    let watchId = null;
 
     function toRad(deg) { return deg * Math.PI / 180; }
 
@@ -181,6 +182,7 @@
       if (orientationEnabled) return Promise.resolve('already');
       // iOS 13+
       if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        // Must be invoked during a user gesture
         return DeviceOrientationEvent.requestPermission().then(resp => {
           if (resp === 'granted') {
             window.addEventListener('deviceorientation', handleOrientation, true);
@@ -191,8 +193,9 @@
             statusEl.textContent = 'コンパスの権限が許可されませんでした。';
             return 'denied';
           }
-        }).catch(() => {
-          statusEl.textContent = 'コンパス権限の要求に失敗しました。';
+        }).catch((e) => {
+          console.warn('DeviceOrientation permission error:', e);
+          statusEl.textContent = 'コンパス権限の要求に失敗しました。ボタンをもう一度押してください。';
           return 'error';
         });
       } else {
@@ -206,35 +209,62 @@
       }
     }
 
+    function startLocationWatch() {
+      if (watchId != null) return;
+      try {
+        watchId = navigator.geolocation.watchPosition(
+          pos => { currentPos = pos.coords; },
+          err => {
+            console.warn('watchPosition error:', err);
+            statusEl.textContent = '位置情報の取得に失敗しました: ' + err.message + '（Safariの場合は設定で位置情報を許可してください）';
+          },
+          { enableHighAccuracy: true, maximumAge: 1000, timeout: 10000 }
+        );
+      } catch (e) {
+        console.warn('watchPosition exception:', e);
+      }
+    }
+
+    function requestLocationOnce() {
+      return new Promise((resolve) => {
+        navigator.geolocation.getCurrentPosition(
+          pos => { currentPos = pos.coords; resolve({ ok: true, pos }); },
+          err => {
+            statusEl.textContent = '現在地の取得に失敗しました: ' + err.message + '（Safariのサイト設定で許可してください）';
+            resolve({ ok: false, err });
+          },
+          { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+        );
+      });
+    }
+
     function setHomeToCurrent() {
-      navigator.geolocation.getCurrentPosition(
-        pos => {
-          homeLatInput.value = pos.coords.latitude;
-          homeLonInput.value = pos.coords.longitude;
-          const ok = saveHome();
-          if (ok) {
-            // As this runs inside a user gesture, request permission and enable
-            enableCompassFromGesture();
-          }
-        },
-        err => { statusEl.textContent = '現在地の取得に失敗しました: ' + err.message; }
-      );
+      // 重要: まずはこのクリックの同期コンテキストでコンパス権限を要求
+      enableCompassFromGesture();
+      // その後に現在地を取得（非同期）
+      requestLocationOnce().then(res => {
+        if (!res.ok) return;
+        homeLatInput.value = res.pos.coords.latitude;
+        homeLonInput.value = res.pos.coords.longitude;
+        if (saveHome()) {
+          startLocationWatch();
+        }
+      });
     }
 
     document.getElementById('save-home').addEventListener('click', () => {
       if (saveHome()) {
-        // Also try to enable compass on manual save (still a user gesture)
+        // Try to enable compass in this user gesture
         enableCompassFromGesture();
+        // And request geolocation permission once, then start watch
+        requestLocationOnce().then(res => { if (res.ok) startLocationWatch(); });
       }
     });
     document.getElementById('use-current').addEventListener('click', setHomeToCurrent);
 
     loadHome();
 
-    navigator.geolocation.watchPosition(
-      pos => { currentPos = pos.coords; },
-      err => { statusEl.textContent = '位置情報の取得に失敗しました: ' + err.message; }
-    );
+    // 位置情報の自動要求は行わない（Safariで開いた直後の拒否を避ける）
 
     function handleOrientation(event) {
       if (!home || !currentPos) { return; }
@@ -247,10 +277,10 @@
     }
 
     function initOrientation() {
-      // If permissionless environment, attach immediately; otherwise we rely on button clicks (user gestures)
-      if (typeof DeviceOrientationEvent === 'undefined' || typeof DeviceOrientationEvent.requestPermission !== 'function') {
-        window.addEventListener('deviceorientation', handleOrientation, true);
-        orientationEnabled = true;
+      // 初期表示では何もしない。ユーザ操作時に権限を要求する。
+      if (typeof DeviceOrientationEvent === 'undefined') {
+        // 非対応環境では何もできないためその旨を表示
+        statusEl.textContent = 'デバイスの方位センサーが利用できません。';
       }
     }
 
