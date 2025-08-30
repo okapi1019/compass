@@ -149,6 +149,21 @@
     let currentPos = null;
     let orientationEnabled = false;
     let watchId = null;
+    let filteredHeading = null; // Smoothed heading (deg)
+    let lastOrientationTs = 0;
+    const ORIENTATION_THROTTLE_MS = 50; // ~20 Hz
+    const HEADING_SMOOTHING = 0.2; // 0..1, larger = more responsive
+    // GPS heading handling
+    let gpsHeading = null; // last GPS course over ground (deg)
+    let gpsSpeed = 0; // m/s
+    let gpsHeadingTs = 0;
+    const SPEED_HEADING_THRESHOLD = 1.5; // m/s (~5.4km/h)
+    const GPS_HEADING_MAX_AGE_MS = 5000;
+    const GPS_SMOOTHING = 0.35;
+    // Animation control
+    let animReq = null;
+    let lastRenderTs = 0;
+    const RENDER_THROTTLE_MS = 33; // ~30fps
 
     function toRad(deg) { return deg * Math.PI / 180; }
 
@@ -184,6 +199,33 @@
       return θ;
     }
 
+    function normalizeAngle(deg) {
+      let d = deg % 360;
+      if (d < 0) d += 360;
+      return d;
+    }
+
+    function angleDelta(from, to) {
+      let d = (to - from + 540) % 360 - 180; // signed shortest path (-180..180]
+      return d;
+    }
+
+    function smoothAngle(prev, next, alpha) {
+      const d = angleDelta(prev, next);
+      return normalizeAngle(prev + alpha * d);
+    }
+
+    function screenOrientationAngle() {
+      let a = 0;
+      if (screen && screen.orientation && typeof screen.orientation.angle === 'number') {
+        a = screen.orientation.angle;
+      } else if (typeof window.orientation === 'number') {
+        a = window.orientation; // legacy iOS
+      }
+      // Normalize to 0..360
+      return ((a % 360) + 360) % 360;
+    }
+
     function loadHome() {
       const lat = localStorage.getItem('homeLat');
       const lon = localStorage.getItem('homeLon');
@@ -210,6 +252,18 @@
       return false;
     }
 
+    function attachOrientationListeners() {
+      // Prefer absolute orientation event if available
+      window.addEventListener('deviceorientationabsolute', handleOrientation, true);
+      window.addEventListener('deviceorientation', handleOrientation, true);
+      // Reset smoothing on screen rotation changes
+      if (screen.orientation && screen.orientation.addEventListener) {
+        screen.orientation.addEventListener('change', () => { filteredHeading = null; });
+      } else {
+        window.addEventListener('orientationchange', () => { filteredHeading = null; }, true);
+      }
+    }
+
     function enableCompassFromGesture() {
       if (orientationEnabled) return Promise.resolve('already');
       // iOS 13+
@@ -217,7 +271,7 @@
         // Must be invoked during a user gesture
         return DeviceOrientationEvent.requestPermission().then(resp => {
           if (resp === 'granted') {
-            window.addEventListener('deviceorientation', handleOrientation, true);
+            attachOrientationListeners();
             orientationEnabled = true;
             statusEl.textContent = 'コンパスを有効化しました。';
             return 'granted';
@@ -233,7 +287,7 @@
       } else {
         // Other platforms auto-allowed
         if (!orientationEnabled) {
-          window.addEventListener('deviceorientation', handleOrientation, true);
+          attachOrientationListeners();
           orientationEnabled = true;
           statusEl.textContent = 'コンパスを有効化しました。';
         }
@@ -248,6 +302,15 @@
           pos => {
             currentPos = pos.coords;
             updateDistance();
+            // Update GPS heading/speed
+            if (typeof pos.coords.speed === 'number' && isFinite(pos.coords.speed)) {
+              gpsSpeed = pos.coords.speed;
+            }
+            if (typeof pos.coords.heading === 'number' && isFinite(pos.coords.heading)) {
+              gpsHeading = normalizeAngle(pos.coords.heading);
+              gpsHeadingTs = performance.now();
+            }
+            requestRender();
           },
           err => {
             console.warn('watchPosition error:', err);
@@ -263,7 +326,19 @@
     function requestLocationOnce() {
       return new Promise((resolve) => {
         navigator.geolocation.getCurrentPosition(
-          pos => { currentPos = pos.coords; updateDistance(); resolve({ ok: true, pos }); },
+          pos => {
+            currentPos = pos.coords;
+            updateDistance();
+            if (typeof pos.coords.speed === 'number' && isFinite(pos.coords.speed)) {
+              gpsSpeed = pos.coords.speed;
+            }
+            if (typeof pos.coords.heading === 'number' && isFinite(pos.coords.heading)) {
+              gpsHeading = normalizeAngle(pos.coords.heading);
+              gpsHeadingTs = performance.now();
+            }
+            requestRender();
+            resolve({ ok: true, pos });
+          },
           err => {
             statusEl.textContent = '現在地の取得に失敗しました: ' + err.message + '（Safariのサイト設定で許可してください）';
             resolve({ ok: false, err });
@@ -302,13 +377,28 @@
     // 位置情報の自動要求は行わない（Safariで開いた直後の拒否を避ける）
 
     function handleOrientation(event) {
-      if (!home || !currentPos) { return; }
-      // Some platforms expose webkitCompassHeading (clockwise from North)
-      const heading = typeof event.webkitCompassHeading === 'number' ? event.webkitCompassHeading : event.alpha;
-      if (typeof heading !== 'number') { return; }
-      const bearing = bearingTo(currentPos.latitude, currentPos.longitude, home.lat, home.lon);
-      const diff = bearing - heading;
-      needle.style.transform = `rotate(${diff}deg)`;
+      const now = performance.now();
+      if (now - lastOrientationTs < ORIENTATION_THROTTLE_MS) return;
+      lastOrientationTs = now;
+
+      // Prefer iOS absolute heading if available
+      let heading = (typeof event.webkitCompassHeading === 'number') ? event.webkitCompassHeading : undefined;
+      if (typeof heading !== 'number' && typeof event.alpha === 'number') {
+        // Convert alpha (0..360, clockwise) to compass heading (clockwise from North)
+        // Many implementations require 360 - alpha to match compass heading.
+        heading = 360 - event.alpha;
+      }
+      if (typeof heading !== 'number' || isNaN(heading)) return;
+
+      // Compensate for screen orientation (portrait/landscape)
+      heading = normalizeAngle(heading + screenOrientationAngle());
+
+      // Smooth to reduce jitter
+      if (filteredHeading == null) filteredHeading = heading;
+      else filteredHeading = smoothAngle(filteredHeading, heading, HEADING_SMOOTHING);
+
+      // Trigger needle update; orientation may change without position changes
+      requestRender();
     }
 
     function initOrientation() {
@@ -317,6 +407,40 @@
         // 非対応環境では何もできないためその旨を表示
         statusEl.textContent = 'デバイスの方位センサーが利用できません。';
       }
+    }
+
+    function requestRender() {
+      if (animReq != null) return;
+      animReq = requestAnimationFrame(renderNeedle);
+    }
+
+    function getEffectiveHeading() {
+      const now = performance.now();
+      const gpsFresh = (gpsHeading != null) && (now - gpsHeadingTs <= GPS_HEADING_MAX_AGE_MS);
+      const moving = (typeof gpsSpeed === 'number') && (gpsSpeed >= SPEED_HEADING_THRESHOLD);
+      // Prefer GPS heading while moving and fresh
+      if (gpsFresh && moving) {
+        if (filteredHeading == null) return gpsHeading;
+        // Blend GPS with magnetometer to avoid jumps
+        return smoothAngle(filteredHeading, gpsHeading, GPS_SMOOTHING);
+      }
+      return filteredHeading;
+    }
+
+    function renderNeedle(ts) {
+      animReq = null;
+      if (ts && ts - lastRenderTs < RENDER_THROTTLE_MS) {
+        // Skip frame; queue next to keep responsiveness
+        animReq = requestAnimationFrame(renderNeedle);
+        return;
+      }
+      lastRenderTs = ts || performance.now();
+      if (!home || !currentPos) return;
+      const effHeading = getEffectiveHeading();
+      if (typeof effHeading !== 'number') return;
+      const bearing = bearingTo(currentPos.latitude, currentPos.longitude, home.lat, home.lon);
+      const diff = normalizeAngle(bearing - effHeading);
+      needle.style.transform = `rotate(${diff}deg)`;
     }
 
     initOrientation();
