@@ -6,18 +6,42 @@
   <title>Home Compass</title>
   <style>
     body { text-align: center; font-family: sans-serif; margin-top: 2rem; }
+<<<<<<< ours
+<<<<<<< ours
     #arrow { font-size: 4rem; transition: transform 0.5s ease; display: inline-block; }
+=======
+    #arrow { font-size: 4rem; transition: transform 0.5s ease; display: inline-block; color: red; }
+>>>>>>> theirs
+=======
+    #arrow { font-size: 4rem; transition: transform 0.5s ease; display: inline-block; color: red; }
+>>>>>>> theirs
     label { display: block; margin-top: 1rem; }
   </style>
 </head>
 <body>
   <h1>自宅コンパス</h1>
+<<<<<<< ours
+<<<<<<< ours
   <div id="arrow">▲</div>
+=======
+  <div id="arrow">↑</div>
+>>>>>>> theirs
+=======
+  <div id="arrow">↑</div>
+>>>>>>> theirs
   <div id="status"></div>
   <div>
     <label>自宅の緯度: <input id="home-lat" type="number" step="any"></label>
     <label>自宅の経度: <input id="home-lon" type="number" step="any"></label>
     <button id="save-home">自宅を保存</button>
+<<<<<<< ours
+<<<<<<< ours
+=======
+    <button id="use-current">現在地を自宅に設定</button>
+>>>>>>> theirs
+=======
+    <button id="use-current">現在地を自宅に設定</button>
+>>>>>>> theirs
   </div>
   <script>
     const arrow = document.getElementById('arrow');
@@ -60,7 +84,29 @@
       }
     }
 
+<<<<<<< ours
+<<<<<<< ours
     document.getElementById('save-home').addEventListener('click', saveHome);
+=======
+=======
+>>>>>>> theirs
+    function setHomeToCurrent() {
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          homeLatInput.value = pos.coords.latitude;
+          homeLonInput.value = pos.coords.longitude;
+          saveHome();
+        },
+        err => { statusEl.textContent = '現在地の取得に失敗しました: ' + err.message; }
+      );
+    }
+
+    document.getElementById('save-home').addEventListener('click', saveHome);
+    document.getElementById('use-current').addEventListener('click', setHomeToCurrent);
+<<<<<<< ours
+>>>>>>> theirs
+=======
+>>>>>>> theirs
 
     loadHome();
 
