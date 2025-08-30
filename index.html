@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Home Compass</title>
+  <style>
+    body { text-align: center; font-family: sans-serif; margin-top: 2rem; }
+    #arrow { font-size: 4rem; transition: transform 0.5s ease; display: inline-block; }
+    label { display: block; margin-top: 1rem; }
+  </style>
+</head>
+<body>
+  <h1>自宅コンパス</h1>
+  <div id="arrow">▲</div>
+  <div id="status"></div>
+  <div>
+    <label>自宅の緯度: <input id="home-lat" type="number" step="any"></label>
+    <label>自宅の経度: <input id="home-lon" type="number" step="any"></label>
+    <button id="save-home">自宅を保存</button>
+  </div>
+  <script>
+    const arrow = document.getElementById('arrow');
+    const statusEl = document.getElementById('status');
+    const homeLatInput = document.getElementById('home-lat');
+    const homeLonInput = document.getElementById('home-lon');
+    let home = null;
+    let currentPos = null;
+
+    function toRad(deg) { return deg * Math.PI / 180; }
+
+    function bearingTo(lat1, lon1, lat2, lon2) {
+      const φ1 = toRad(lat1);
+      const φ2 = toRad(lat2);
+      const Δλ = toRad(lon2 - lon1);
+      const y = Math.sin(Δλ) * Math.cos(φ2);
+      const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+      let θ = Math.atan2(y, x);
+      θ = (θ * 180 / Math.PI + 360) % 360;
+      return θ;
+    }
+
+    function loadHome() {
+      const lat = localStorage.getItem('homeLat');
+      const lon = localStorage.getItem('homeLon');
+      if (lat && lon) {
+        home = { lat: parseFloat(lat), lon: parseFloat(lon) };
+        homeLatInput.value = lat;
+        homeLonInput.value = lon;
+      }
+    }
+
+    function saveHome() {
+      const lat = parseFloat(homeLatInput.value);
+      const lon = parseFloat(homeLonInput.value);
+      if (isFinite(lat) && isFinite(lon)) {
+        localStorage.setItem('homeLat', lat);
+        localStorage.setItem('homeLon', lon);
+        home = { lat, lon };
+      }
+    }
+
+    document.getElementById('save-home').addEventListener('click', saveHome);
+
+    loadHome();
+
+    navigator.geolocation.watchPosition(
+      pos => { currentPos = pos.coords; },
+      err => { statusEl.textContent = '位置情報の取得に失敗しました: ' + err.message; }
+    );
+
+    function handleOrientation(event) {
+      if (!home || !currentPos) { return; }
+      const heading = event.alpha;
+      if (typeof heading !== 'number') { return; }
+      const bearing = bearingTo(currentPos.latitude, currentPos.longitude, home.lat, home.lon);
+      const diff = bearing - heading;
+      arrow.style.transform = `rotate(${diff}deg)`;
+    }
+
+    function initOrientation() {
+      if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+        const btn = document.createElement('button');
+        btn.textContent = 'コンパスを有効化';
+        btn.addEventListener('click', () => {
+          DeviceOrientationEvent.requestPermission().then(resp => {
+            if (resp === 'granted') {
+              window.addEventListener('deviceorientation', handleOrientation, true);
+              btn.remove();
+            }
+          });
+        });
+        document.body.appendChild(btn);
+      } else {
+        window.addEventListener('deviceorientation', handleOrientation, true);
+      }
+    }
+
+    initOrientation();
+  </script>
+</body>
+</html>
